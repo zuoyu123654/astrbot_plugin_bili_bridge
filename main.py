@@ -1997,6 +1997,48 @@ class BiliBridgePlugin(Star):
             lines.append(f"{index}. {title_of(row, 40)}")
         return "\n".join(lines)
 
+    def _last_round_when(self) -> str:
+        """最近一轮大概在什么时候：取 digest 最新文件的修改时间。"""
+
+        base = Path(os.path.expanduser(self.cfg.str("digest_dir", "") or DEFAULT_DIGEST_DIR))
+        try:
+            files = sorted((p for p in base.glob("*.md") if p.is_file()),
+                           key=lambda p: p.stat().st_mtime, reverse=True)
+            if files:
+                return datetime.fromtimestamp(files[0].stat().st_mtime).strftime("%m-%d %H:%M")
+        except OSError:
+            pass
+        if self._day_rows_from_digest():
+            return "今天"
+        return "刚才"
+
+    @filter.on_llm_request()
+    async def inject_repeat_list_note(self, event: AstrMessageEvent, req: ProviderRequest):
+        """重复要清单时，只提醒模型「别再列一遍」，话由它自己说。"""
+
+        try:
+            if not event.get_extra("bili_bridge_repeat_list"):
+                return
+        except Exception:  # noqa: BLE001
+            return
+        if TextPart is None:
+            return
+        try:
+            part = TextPart(text="（后台资料：刚才已经把最近刷到的清单列过了，别再重复列；用一两句话带过，问他想听哪条。）")
+            for attr in ("mark_as_temp", "make_as_temp"):
+                marker = getattr(part, attr, None)
+                if callable(marker):
+                    try:
+                        marked = marker()
+                        if marked is not None:
+                            part = marked
+                    except Exception:  # noqa: BLE001
+                        pass
+                    break
+            req.extra_user_content_parts.append(part)
+        except Exception:  # noqa: BLE001
+            logger.exception("[BiliBridge] 注入「别重复列清单」说明失败")
+
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=200)
     async def answer_list_directly(self, event: AstrMessageEvent):
         """被问「今天刷到什么」时插件自己回答，避免模型概括成「就那几条」。
@@ -2019,12 +2061,40 @@ class BiliBridgePlugin(Star):
             sender = str(getattr(event, "get_sender_id", lambda: "")() or "")
             if owners and sender not in owners:
                 return
+            # 只问时间 / 问「刷没刷」：一句话就够，别甩整张清单
+            content_text = re.sub(r"什么时候|啥时候|几点|多久|多早", "", text)
+            content_ask = bool(re.search(r"什么|啥|哪些|哪几条|哪几个|刷到", content_text))
+            if not content_ask:
+                low = max(0.0, float(self.cfg.int("direct_reply_delay", 1)))
+                high = max(low, float(self.cfg.int("direct_reply_delay_max", 2)))
+                if high > 0:
+                    await asyncio.sleep(random.uniform(low, high))
+                yield event.plain_result(f"最近一轮在 {self._last_round_when()}。")
+                event.stop_event()
+                logger.info("[BiliBridge] 只问时间/有没有刷，回一句：%s", text)
+                return
+            # 句子太长（夹着别的问题）：别直接甩清单，交给模型结合记忆块说
+            list_max = self.cfg.int("recent_list_max_chars", 12)
+            if len(text) > list_max:
+                logger.info("[BiliBridge] 内容问题太长（%s 字），交给模型：%s", len(text), text[:30])
+                return
+            # 刚发过清单：这次别再列，交给模型用自己的话回
+            window = self.cfg.int("list_repeat_window", 600)
+            last_list = float(getattr(self, "_last_list_at", 0.0) or 0.0)
+            if time.time() - last_list <= window:
+                logger.info("[BiliBridge] 刚发过清单，交给模型：%s", text[:30])
+                try:
+                    event.set_extra("bili_bridge_repeat_list", True)
+                except Exception:  # noqa: BLE001
+                    pass
+                return
             # 插件直接回太快、不像真人：先「想」一会儿再发（可配，0 = 不等）
             low = max(0.0, float(self.cfg.int("direct_reply_delay", 2)))
             high = max(low, float(self.cfg.int("direct_reply_delay_max", 5)))
             if high > 0:
                 await asyncio.sleep(random.uniform(low, high))
             yield event.plain_result(self._today_list())
+            self._last_list_at = time.time()
             event.stop_event()
             logger.info("[BiliBridge] 直接回清单（绕过模型）：%s", text)
         except Exception:  # noqa: BLE001
