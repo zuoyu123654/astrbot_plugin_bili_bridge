@@ -1,4 +1,4 @@
-name: astrbot_plugin_bili_bridge
+﻿name: astrbot_plugin_bili_bridge
 display_name: B站动态记忆桥
 short_desc: 把 B站 每日挑选写进 AI 记忆，被问细节时自动拉字幕；说一句「刷视频」就让她去刷一轮
 desc: >-
@@ -22,7 +22,7 @@ desc: >-
   链接藏在卡片里，`b23.tv` 短链会自动跟随解析），所以直接转发视频过来也能分析。
 
   **全程本地**：所有请求都走本机 bili-cli 与本机 DSH 网关，不经过任何第三方解析接口。
-version: 0.5.4
+version: 0.6.0
 author: paopao
 repo: https://github.com/Liuxuenin/astrbot_plugin_bili_bridge
 astrbot_version: ">=4.17.0"
@@ -33,3 +33,4 @@ tags:
   - 记忆
   - 视频
   - 字幕
+
